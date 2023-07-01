@@ -2,6 +2,7 @@ use anyhow::Context;
 use chrono::NaiveDate;
 use rand::rngs::ThreadRng;
 use rand::Rng;
+use reqwest::header::{CACHE_CONTROL, PRAGMA, USER_AGENT};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
 use serde_json::json;
@@ -10,14 +11,15 @@ use std::io::{self, Write as WRT};
 use std::process::Command;
 use std::str::FromStr;
 use std::time::Duration;
+use ua_generator::ua::spoof_ua;
 
 const URL: &str = "https://portal.permit.pcta.org/availability/mexican-border.php";
-const PERIOD_MIN: u64 = 15; /* 15 seconds */
-const PERIOD_MAX: u64 = 60 * 3; /* 3 minutes */
+const PERIOD_MIN: u64 = 24; /* 15 seconds */
+const PERIOD_MAX: u64 = 40; /* 60 seconds */
 const LIMIT: u64 = 50;
 const RANGE_YEAR: i32 = 2023;
 
-// 2023-04-05
+// 2023-04-01
 const RANGE_MONTH_START: u32 = 4;
 const RANGE_DAY_START: u32 = 1;
 
@@ -67,7 +69,32 @@ struct Data {
 }
 
 pub async fn scrape(client: &Client) -> anyhow::Result<Vec<(NaiveDate, u64)>> {
-    let response = client.get(URL).send().await?;
+    let ua = spoof_ua();
+    let response = client
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+        .get(URL)
+        .header(USER_AGENT, ua)
+        .header(PRAGMA, "no-cache")
+        .header(CACHE_CONTROL, "no-cache")
+        .send()
+        .await?;
     let text = response.text().await?;
 
     let html = scraper::Html::parse_document(&text);
@@ -75,12 +102,14 @@ pub async fn scrape(client: &Client) -> anyhow::Result<Vec<(NaiveDate, u64)>> {
         scraper::Selector::parse(".container > script[type='text/javascript']").unwrap();
 
     let re = regex::Regex::new(r"var data = (\{.*\});").unwrap();
-    let script = html.select(&script_selector).next().unwrap();
+    let script = html.select(&script_selector).next().context(
+        "Failed to select <script> tag in HTML document. We may be getting IP blocked or CAPTCHA",
+    )?;
     // println!("{:?}", script.inner_html());
     let inner_html = script.inner_html();
 
     let caps = re.captures_iter(&inner_html).next().unwrap();
-    // println!("{:?}", &caps[1]);
+    println!("DEBUG DEBUG DEBUG \n\n{:?}", &caps[1]);
     let data_str = &caps[1];
 
     let data = serde_json::from_str::<Data>(data_str)
@@ -123,7 +152,7 @@ pub async fn scrape(client: &Client) -> anyhow::Result<Vec<(NaiveDate, u64)>> {
 }
 
 pub fn handle_result(
-    res: anyhow::Result<Vec<(NaiveDate, u64)>>,
+    res: &anyhow::Result<Vec<(NaiveDate, u64)>>,
     now: &String,
 ) -> anyhow::Result<serde_json::Value> {
     match res {
@@ -211,7 +240,11 @@ pub fn handle_result(
 }
 
 pub async fn loop_scrape(client: Client) -> anyhow::Result<()> {
-    let mut interval = tokio::time::interval(Duration::from_secs(PERIOD_MIN));
+    // Initialize each scraper with a different interval to prevent detection of scraping
+    let num = (rand::random::<u64>() % (PERIOD_MAX + PERIOD_MIN)) + PERIOD_MIN;
+    let rand_interval = num.clamp(PERIOD_MIN, PERIOD_MAX);
+    println!("{} - Second Interval Initalized", rand_interval);
+    let mut interval = tokio::time::interval(Duration::from_secs(rand_interval));
 
     loop {
         interval.tick().await;
@@ -229,16 +262,40 @@ pub async fn loop_scrape(client: Client) -> anyhow::Result<()> {
             let seconds = duration.num_seconds() % 60;
             let minutes = (duration.num_seconds() / 60) % 60;
             let hours = (duration.num_seconds() / 60) / 60;
-            let diff = format!("{}:{}:{}", hours, minutes, seconds);
-            println!(
-                "Not scraping since we're before business hours 9AM - 5PM PST. Next scrape in : {}",
-                diff
+            let msg = format!(
+                "Not scraping since we're before business hours 9AM - 5PM PST. Next scrape in : {}h {}m {}s",
+                hours, minutes, seconds
             );
+            println!("{}", msg);
+
+            let msg_json = json!({
+                "method": "send",
+                "params": {
+                    "options": {
+                        "channel": {
+                            "name": "jry.zed",
+                            "members_type": "team",
+                            "topic_name": "pcta-logs",
+                        },
+                        "message": {
+                            "body": msg,
+                        }
+                    }
+                }
+            });
+            let mut keybase = Command::new("keybase");
+            keybase
+                .arg("chat")
+                .arg("api")
+                .arg("-m")
+                .arg(msg_json.to_string())
+                .spawn()
+                .expect("Failed to call keybase API process (err)");
             continue;
         }
 
         let res = scrape(&client).await;
-        let msg_json = handle_result(res, &now)?;
+        let msg_json = handle_result(&res, &now)?;
         let mut keybase = Command::new("keybase");
         keybase
             .arg("chat")
@@ -250,17 +307,70 @@ pub async fn loop_scrape(client: Client) -> anyhow::Result<()> {
 
         println!("{} - Completed a scrape of PCTA site", now);
 
-        println!("{} - Minutes until next scrape", PERIOD_MIN);
+        // Reconnect to the VPN to try and get around IP blocking
+        if res.is_err() {
+            let mut mullvad = Command::new("mullvad");
+            mullvad.arg("reconnect").spawn().expect("Failed to call mullvad reconnect (err)");
+            let msg = format!("`{}` - *Reconnected to the VPN*", now);
+            println!("{}", msg);
+            let msg_json = json!({
+                "method": "send",
+                "params": {
+                    "options": {
+                        "channel": {
+                            "name": "jry.zed",
+                            "members_type": "team",
+                            "topic_name": "pcta-logs",
+                        },
+                        "message": {
+                            "body": msg,
+                        }
+                    }
+                }
+            });
+            let mut keybase = Command::new("keybase");
+            keybase
+                .arg("chat")
+                .arg("api")
+                .arg("-m")
+                .arg(msg_json.to_string())
+                .spawn()
+                .expect("Failed to call keybase API process (err)");
+        }
+
+
+        println!("{} - {} - Seconds until next scrape", now, rand_interval);
     }
+}
+
+pub async fn init_vpn() -> anyhow::Result<()> {
+    todo!();
 }
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
     let client = reqwest::Client::new();
+
+    // Establish connection on the mullvad VPN to prevent IP scrape detection.
+    //
+    // `mullvad relay set location us`                          - Allows for selection of relays in the United States
+    // `mullvad relay set tunnel wireguard --entry-location us` - Uses the WireGuard protocol through US relays
+    // `mullvad relay get`                                      - Returns the relay configuration
+    //
+    // `mullvad connect`                                        - Connects using the relay config
+    // `mullvad reconnect`                                      - Forces a reconnection at a new location
+    // `mullvad status`                                         - 'Connected' or 'Disconnected' appear in output
+    // `mullvad disconnect`                                     - Disconnects from the relay
+
+    // TODO: Implement this
+    // init_vpn();
+
     // Loop here
     let forever = tokio::task::spawn(loop_scrape(client));
 
+    // Start
     forever.await??;
 
+    // Never exit
     Ok(())
 }
