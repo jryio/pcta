@@ -71,24 +71,6 @@ struct Data {
 pub async fn scrape(client: &Client) -> anyhow::Result<Vec<(NaiveDate, u64)>> {
     let ua = spoof_ua();
     let response = client
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
         .get(URL)
         .header(USER_AGENT, ua)
         .header(PRAGMA, "no-cache")
@@ -310,7 +292,10 @@ pub async fn loop_scrape(client: Client) -> anyhow::Result<()> {
         // Reconnect to the VPN to try and get around IP blocking
         if res.is_err() {
             let mut mullvad = Command::new("mullvad");
-            mullvad.arg("reconnect").spawn().expect("Failed to call mullvad reconnect (err)");
+            mullvad
+                .arg("reconnect")
+                .spawn()
+                .expect("Failed to call mullvad reconnect (err)");
             let msg = format!("`{}` - *Reconnected to the VPN*", now);
             println!("{}", msg);
             let msg_json = json!({
@@ -337,7 +322,6 @@ pub async fn loop_scrape(client: Client) -> anyhow::Result<()> {
                 .spawn()
                 .expect("Failed to call keybase API process (err)");
         }
-
 
         println!("{} - {} - Seconds until next scrape", now, rand_interval);
     }
