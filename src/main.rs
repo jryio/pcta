@@ -78,10 +78,12 @@ pub async fn scrape(client: &Client) -> anyhow::Result<Vec<(NaiveDate, u64)>> {
         .send()
         .await?;
     let text = response.text().await?;
+    println!("JRY DEBUG - html = {text:?}");
 
     let html = scraper::Html::parse_document(&text);
     let script_selector =
-        scraper::Selector::parse(".container > script[type='text/javascript']").unwrap();
+        scraper::Selector::parse(".container > script[type='text/javascript']:nth-child(6)")
+            .unwrap();
 
     let re = regex::Regex::new(r"var data = (\{.*\});").unwrap();
     let script = html.select(&script_selector).next().context(
@@ -333,7 +335,10 @@ pub async fn init_vpn() -> anyhow::Result<()> {
 
 #[tokio::main]
 pub async fn main() -> anyhow::Result<()> {
-    let client = reqwest::Client::new();
+    let client = reqwest::Client::builder()
+        .cookie_store(true)
+        .build()
+        .expect("Reqwest client build failed");
 
     // Establish connection on the mullvad VPN to prevent IP scrape detection.
     //
